@@ -82,6 +82,28 @@ int vm_map(uint64_t virt_addr, uint64_t phys_addr, uint32_t prot) {
     area->next = vm_areas;
     vm_areas = area;
     
+    uint64_t* ttbr = (uint64_t*)0x1000;
+    uint64_t l1_idx = (virt_addr >> 30) & 0x1FF;
+    uint64_t l2_idx = (virt_addr >> 21) & 0x1FF;
+    uint64_t l3_idx = (virt_addr >> 12) & 0x1FF;
+    
+    if (!(ttbr[l1_idx] & 1)) {
+        uint64_t new_table = alloc_page();
+        ttbr[l1_idx] = new_table | 0x03;
+    }
+    
+    uint64_t* l2 = (uint64_t*)(ttbr[l1_idx] & 0xFFFFFFFFFFFFF000);
+    if (!(l2[l2_idx] & 1)) {
+        uint64_t new_table = alloc_page();
+        l2[l2_idx] = new_table | 0x03;
+    }
+    
+    uint64_t* l3 = (uint64_t*)(l2[l2_idx] & 0xFFFFFFFFFFFFF000);
+    uint64_t flags = 0x03;
+    if (prot & PROT_WRITE) flags |= 0x04;
+    if (!(prot & PROT_EXEC)) flags |= 0x8000000000000000ULL;
+    l3[l3_idx] = phys_addr | flags;
+    
     return 0;
 }
 

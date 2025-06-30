@@ -2,8 +2,6 @@
 #include <stddef.h>
 #include "vm_pages.h"
 
-#define MEMORY_LOCATION 0x100000
-
 void kernel_main(void) {
     vm_init();
     
@@ -16,6 +14,6 @@ void kernel_main(void) {
     mem[2] = '\0';
     
     while(1) {
-        __asm__ volatile("hlt");
+        __asm__ volatile("wfi");
     }
 }

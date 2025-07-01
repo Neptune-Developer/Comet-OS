@@ -1,12 +1,31 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "vm_pages.h"
 
 #define PAGE_SIZE 4096
 #define PAGE_SHIFT 12
 #define VM_MAX_PAGES 262144
 #define VM_AREA_POOL_SIZE 1024
-#define RESERVED_PAGES 256
+#define RESERVED_PAGES 1024
+
+#define PTE_VALID       (1ULL << 0)
+#define PTE_TABLE       (1ULL << 1)
+#define PTE_AF          (1ULL << 10)
+#define PTE_SH_INNER    (3ULL << 8)
+#define PTE_AP_RW_EL1   (0ULL << 6)
+#define PTE_AP_RO_EL1   (2ULL << 6)
+#define PTE_AP_RW_EL0   (1ULL << 6)
+#define PTE_AP_RO_EL0   (3ULL << 6)
+#define PTE_PXN         (1ULL << 53)
+#define PTE_UXN         (1ULL << 54)
+
+#define ATTR_INDEX_NORMAL_WB_WA  2
+#define PTE_ATTR_INDX(idx) ((uint64_t)(idx) << 2)
+#define PTE_ADDR_MASK 0x0000FFFFFFFFF000ULL
+
+#define PFN_TO_PADDR(pfn) ((pfn) << PAGE_SHIFT)
+#define PADDR_TO_PFN(paddr) ((paddr) >> PAGE_SHIFT)
 
 struct page {
     uint64_t phys_addr;
@@ -55,6 +74,24 @@ static inline void zero_page(uint64_t phys_addr) {
     }
 }
 
+static void set_bit(uint64_t pfn) {
+    int bitmap_idx = pfn / 32;
+    int bit_idx = pfn % 32;
+    page_bitmap[bitmap_idx] |= (1 << bit_idx);
+}
+
+static void clear_bit(uint64_t pfn) {
+    int bitmap_idx = pfn / 32;
+    int bit_idx = pfn % 32;
+    page_bitmap[bitmap_idx] &= ~(1 << bit_idx);
+}
+
+static bool is_bit_set(uint64_t pfn) {
+    int bitmap_idx = pfn / 32;
+    int bit_idx = pfn % 32;
+    return (page_bitmap[bitmap_idx] & (1 << bit_idx)) != 0;
+}
+
 static struct vm_area* alloc_vm_area(void) {
     if (free_vm_areas) {
         struct vm_area* area = free_vm_areas;
@@ -80,6 +117,26 @@ static void free_vm_area(struct vm_area* area) {
     free_vm_areas = area;
 }
 
+static uint64_t* get_or_alloc_page_table(uint64_t* parent_entry, bool allocate) {
+    if (*parent_entry & PTE_VALID) {
+        if (*parent_entry & PTE_TABLE) {
+            return (uint64_t*)(*parent_entry & PTE_ADDR_MASK);
+        } else {
+            return NULL;
+        }
+    } else if (allocate) {
+        uint64_t new_table = alloc_page();
+        if (new_table == 0) return NULL;
+        
+        zero_page(new_table);
+        *parent_entry = new_table | PTE_VALID | PTE_TABLE | PTE_AF | PTE_SH_INNER;
+        memory_barrier();
+        
+        return (uint64_t*)new_table;
+    }
+    return NULL;
+}
+
 void vm_init(void) {
     for (int i = 0; i < VM_MAX_PAGES; i++) {
         pages[i].phys_addr = i * PAGE_SIZE;
@@ -92,9 +149,7 @@ void vm_init(void) {
     }
     
     for (int i = 0; i < RESERVED_PAGES; i++) {
-        int bitmap_idx = i / 32;
-        int bit_idx = i % 32;
-        page_bitmap[bitmap_idx] |= (1 << bit_idx);
+        set_bit(i);
         pages[i].ref_count = 1;
     }
     
@@ -119,45 +174,64 @@ uint64_t alloc_page(void) {
         return 0;
     }
     
-    for (int i = RESERVED_PAGES / 32; i < VM_MAX_PAGES / 32; i++) {
-        if (page_bitmap[i] != 0xFFFFFFFF) {
-            for (int j = 0; j < 32; j++) {
-                int page_idx = i * 32 + j;
-                
-                if (page_idx < RESERVED_PAGES) continue;
-                
-                if (!(page_bitmap[i] & (1 << j))) {
-                    page_bitmap[i] |= (1 << j);
-                    pages[page_idx].ref_count = 1;
-                    pages[page_idx].flags = 0;
-                    free_pages--;
-                    
-                    uint64_t phys_addr = pages[page_idx].phys_addr;
-                    zero_page(phys_addr);
-                    
-                    return phys_addr;
-                }
-            }
+    for (uint64_t i = RESERVED_PAGES; i < VM_MAX_PAGES; i++) {
+        if (!is_bit_set(i)) {
+            set_bit(i);
+            pages[i].ref_count = 1;
+            pages[i].flags = 0;
+            free_pages--;
+            
+            uint64_t phys_addr = pages[i].phys_addr;
+            zero_page(phys_addr);
+            
+            return phys_addr;
         }
     }
+    return 0;
+}
+
+uint64_t alloc_pages(int count) {
+    if (count <= 0 || count > free_pages) {
+        return 0;
+    }
+    
+    for (int start = RESERVED_PAGES; start <= VM_MAX_PAGES - count; start++) {
+        int consecutive = 0;
+        
+        for (int i = start; i < start + count; i++) {
+            if (is_bit_set(i)) {
+                break;
+            }
+            consecutive++;
+        }
+        
+        if (consecutive == count) {
+            for (int i = start; i < start + count; i++) {
+                set_bit(i);
+                pages[i].ref_count = 1;
+                pages[i].flags = 0;
+                zero_page(pages[i].phys_addr);
+            }
+            free_pages -= count;
+            return pages[start].phys_addr;
+        }
+    }
+    
     return 0;
 }
 
 void free_page(uint64_t phys_addr) {
     if (phys_addr == 0) return;
     
-    int page_idx = phys_addr / PAGE_SIZE;
-    if (page_idx >= VM_MAX_PAGES || page_idx < RESERVED_PAGES) return;
+    uint64_t pfn = PADDR_TO_PFN(phys_addr);
+    if (pfn >= VM_MAX_PAGES || pfn < RESERVED_PAGES) return;
     
-    if (pages[page_idx].ref_count > 0) {
-        pages[page_idx].ref_count--;
-        if (pages[page_idx].ref_count == 0) {
-            int bitmap_idx = page_idx / 32;
-            int bit_idx = page_idx % 32;
-            page_bitmap[bitmap_idx] &= ~(1 << bit_idx);
-            pages[page_idx].flags = 0;
+    if (pages[pfn].ref_count > 0) {
+        pages[pfn].ref_count--;
+        if (pages[pfn].ref_count == 0) {
+            clear_bit(pfn);
+            pages[pfn].flags = 0;
             free_pages++;
-            
             zero_page(phys_addr);
         }
     }
@@ -169,18 +243,8 @@ void free_pages(uint64_t phys_addr, int count) {
     }
 }
 
-static uint64_t* get_or_alloc_page_table(uint64_t* parent_entry) {
-    if (*parent_entry & 1) {
-        return (uint64_t*)(*parent_entry & 0xFFFFFFFFFFFFF000ULL);
-    }
-    
-    uint64_t new_table = alloc_page();
-    if (new_table == 0) return NULL;
-    
-    *parent_entry = new_table | 0x03;
-    memory_barrier();
-    
-    return (uint64_t*)new_table;
+void set_page_table_base(uint64_t base) {
+    page_table_base = (uint64_t*)base;
 }
 
 int vm_map(uint64_t virt_addr, uint64_t phys_addr, uint32_t prot) {
@@ -196,49 +260,154 @@ int vm_map(uint64_t virt_addr, uint64_t phys_addr, uint32_t prot) {
     area->next = vm_areas;
     vm_areas = area;
     
+    uint64_t l0_idx = (virt_addr >> 39) & 0x1FF;
     uint64_t l1_idx = (virt_addr >> 30) & 0x1FF;
     uint64_t l2_idx = (virt_addr >> 21) & 0x1FF;
     uint64_t l3_idx = (virt_addr >> 12) & 0x1FF;
     
-    uint64_t* l2_table = get_or_alloc_page_table(&page_table_base[l1_idx]);
+    uint64_t* l0_table = page_table_base;
+    uint64_t* l1_table = get_or_alloc_page_table(&l0_table[l0_idx], true);
+    if (!l1_table) {
+        free_vm_area(area);
+        return -1;
+    }
+    
+    uint64_t* l2_table = get_or_alloc_page_table(&l1_table[l1_idx], true);
     if (!l2_table) {
         free_vm_area(area);
         return -1;
     }
     
-    uint64_t* l3_table = get_or_alloc_page_table(&l2_table[l2
-
-uint64_t alloc_pages(int count) {
-    if (count <= 0 || count > free_pages) {
-        return 0;
+    uint64_t* l3_table = get_or_alloc_page_table(&l2_table[l2_idx], true);
+    if (!l3_table) {
+        free_vm_area(area);
+        return -1;
     }
     
-    for (int start = RESERVED_PAGES; start <= VM_MAX_PAGES - count; start++) {
-        int consecutive = 0;
-        
-        for (int i = start; i < start + count; i++) {
-            int bitmap_idx = i / 32;
-            int bit_idx = i % 32;
-            
-            if (page_bitmap[bitmap_idx] & (1 << bit_idx)) {
-                break;
-            }
-            consecutive++;
+    uint64_t pte_flags = PTE_VALID | PTE_AF | PTE_SH_INNER | PTE_ATTR_INDX(ATTR_INDEX_NORMAL_WB_WA);
+    
+    if (!(prot & PROT_EXEC)) {
+        pte_flags |= PTE_UXN | PTE_PXN;
+    }
+    
+    if (prot & PROT_WRITE) {
+        if (prot & PROT_USER) {
+            pte_flags |= PTE_AP_RW_EL0;
+        } else {
+            pte_flags |= PTE_AP_RW_EL1;
         }
-        
-        if (consecutive == count) {
-            for (int i = start; i < start + count; i++) {
-                int bitmap_idx = i / 32;
-                int bit_idx = i % 32;
-                page_bitmap[bitmap_idx] |= (1 << bit_idx);
-                pages[i].ref_count = 1;
-                pages[i].flags = 0;
-                zero_page(pages[i].phys_addr);
-            }
-            free_pages -= count;
-            return pages[start].phys_addr;
+    } else if (prot & PROT_READ) {
+        if (prot & PROT_USER) {
+            pte_flags |= PTE_AP_RO_EL0;
+        } else {
+            pte_flags |= PTE_AP_RO_EL1;
         }
+    }
+    
+    l3_table[l3_idx] = phys_addr | pte_flags;
+    tlb_invalidate_page(virt_addr);
+    
+    return 0;
+}
+
+int vm_unmap(uint64_t virt_addr) {
+    if (!page_table_base) return -1;
+    if (virt_addr & 0xFFF) return -1;
+    
+    uint64_t l0_idx = (virt_addr >> 39) & 0x1FF;
+    uint64_t l1_idx = (virt_addr >> 30) & 0x1FF;
+    uint64_t l2_idx = (virt_addr >> 21) & 0x1FF;
+    uint64_t l3_idx = (virt_addr >> 12) & 0x1FF;
+    
+    uint64_t* l0_table = page_table_base;
+    uint64_t* l1_table = get_or_alloc_page_table(&l0_table[l0_idx], false);
+    if (!l1_table) return -1;
+    
+    uint64_t* l2_table = get_or_alloc_page_table(&l1_table[l1_idx], false);
+    if (!l2_table) return -1;
+    
+    uint64_t* l3_table = get_or_alloc_page_table(&l2_table[l2_idx], false);
+    if (!l3_table) return -1;
+    
+    l3_table[l3_idx] = 0;
+    tlb_invalidate_page(virt_addr);
+    
+    struct vm_area** current = &vm_areas;
+    while (*current) {
+        if ((*current)->start <= virt_addr && virt_addr < (*current)->end) {
+            struct vm_area* to_free = *current;
+            *current = (*current)->next;
+            free_vm_area(to_free);
+            break;
+        }
+        current = &(*current)->next;
     }
     
     return 0;
+}
+
+int vm_protect(uint64_t virt_addr, uint32_t prot) {
+    if (!page_table_base) return -1;
+    if (virt_addr & 0xFFF) return -1;
+    
+    uint64_t l0_idx = (virt_addr >> 39) & 0x1FF;
+    uint64_t l1_idx = (virt_addr >> 30) & 0x1FF;
+    uint64_t l2_idx = (virt_addr >> 21) & 0x1FF;
+    uint64_t l3_idx = (virt_addr >> 12) & 0x1FF;
+    
+    uint64_t* l0_table = page_table_base;
+    uint64_t* l1_table = get_or_alloc_page_table(&l0_table[l0_idx], false);
+    if (!l1_table) return -1;
+    
+    uint64_t* l2_table = get_or_alloc_page_table(&l1_table[l1_idx], false);
+    if (!l2_table) return -1;
+    
+    uint64_t* l3_table = get_or_alloc_page_table(&l2_table[l2_idx], false);
+    if (!l3_table) return -1;
+    
+    uint64_t entry = l3_table[l3_idx];
+    if (!(entry & PTE_VALID)) return -1;
+    
+    uint64_t phys_addr = entry & PTE_ADDR_MASK;
+    uint64_t pte_flags = PTE_VALID | PTE_AF | PTE_SH_INNER | PTE_ATTR_INDX(ATTR_INDEX_NORMAL_WB_WA);
+    
+    if (!(prot & PROT_EXEC)) {
+        pte_flags |= PTE_UXN | PTE_PXN;
+    }
+    
+    if (prot & PROT_WRITE) {
+        if (prot & PROT_USER) {
+            pte_flags |= PTE_AP_RW_EL0;
+        } else {
+            pte_flags |= PTE_AP_RW_EL1;
+        }
+    } else if (prot & PROT_READ) {
+        if (prot & PROT_USER) {
+            pte_flags |= PTE_AP_RO_EL0;
+        } else {
+            pte_flags |= PTE_AP_RO_EL1;
+        }
+    }
+    
+    l3_table[l3_idx] = phys_addr | pte_flags;
+    tlb_invalidate_page(virt_addr);
+    
+    struct vm_area* current = vm_areas;
+    while (current) {
+        if (current->start <= virt_addr && virt_addr < current->end) {
+            current->prot = prot;
+            break;
+        }
+        current = current->next;
+    }
+    
+    return 0;
+}
+
+uint64_t get_free_pages(void) {
+    return free_pages;
+}
+
+uint64_t get_total_pages(void) {
+    return total_pages;
 }

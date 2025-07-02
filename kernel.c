@@ -10,9 +10,21 @@
 #define UART_LCRH (UART_BASE + 0x2C)
 #define UART_CR   (UART_BASE + 0x30)
 
-#define FB_BASE 0xA0000000
-#define FB_WIDTH 1024
-#define FB_HEIGHT 768
+#define FB_INFO_ADDR 0x8000
+#define DEFAULT_FB_BASE 0xA0000000
+#define DEFAULT_FB_WIDTH 1024
+#define DEFAULT_FB_HEIGHT 768
+
+struct fb_info {
+    uint64_t base_addr;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint32_t size;
+};
+
+static struct fb_info fb;
 
 static void mmio_write(uint64_t addr, uint32_t value) {
    *(volatile uint32_t*)addr = value;
@@ -46,6 +58,111 @@ static void uart_puts(const char* str) {
    }
 }
 
+static void uart_puthex(uint64_t val) {
+    char hex[] = "0123456789ABCDEF";
+    uart_puts("0x");
+    for (int i = 60; i >= 0; i -= 4) {
+        uart_putchar(hex[(val >> i) & 0xF]);
+    }
+}
+
+static void uart_putdec(uint64_t val) {
+    char num_str[32];
+    int i = 0;
+    if (val == 0) {
+        uart_putchar('0');
+        return;
+    }
+    while (val > 0) {
+        num_str[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    for (int j = i - 1; j >= 0; j--) {
+        uart_putchar(num_str[j]);
+    }
+}
+
+static int detect_rpi_fb(void) {
+    volatile uint32_t* mailbox = (volatile uint32_t*)0x3F00B880;
+    static volatile uint32_t __attribute__((aligned(16))) msg[32];
+    
+    msg[0] = 32 * 4;
+    msg[1] = 0;
+    msg[2] = 0x40003;
+    msg[3] = 8;
+    msg[4] = 0;
+    msg[5] = 1920;
+    msg[6] = 1080;
+    msg[7] = 0;
+    
+    while (mailbox[6] & 0x80000000);
+    mailbox[8] = ((uint64_t)msg & ~0xF) | 8;
+    while (!(mailbox[6] & 0x40000000));
+    
+    if (msg[1] == 0x80000000 && msg[5] > 0 && msg[6] > 0) {
+        fb.width = msg[5];
+        fb.height = msg[6];
+        return 0;
+    }
+    return -1;
+}
+
+static int detect_uefi_fb(void) {
+    volatile uint64_t* gop_base = (volatile uint64_t*)0x10000;
+    if (*gop_base != 0) {
+        fb.base_addr = *gop_base;
+        fb.width = *(uint32_t*)(gop_base + 1);
+        fb.height = *(uint32_t*)(gop_base + 2);
+        if (fb.width > 0 && fb.height > 0) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int fb_detect(void) {
+    fb.bpp = 32;
+    
+    if (detect_rpi_fb() == 0) {
+        fb.base_addr = 0x3C000000;
+        fb.pitch = fb.width * 4;
+        fb.size = fb.pitch * fb.height;
+        uart_puts("rpi fb: ");
+        uart_putdec(fb.width);
+        uart_puts("x");
+        uart_putdec(fb.height);
+        uart_puts("\n");
+        return 0;
+    }
+    
+    if (detect_uefi_fb() == 0) {
+        fb.pitch = fb.width * 4;
+        fb.size = fb.pitch * fb.height;
+        uart_puts("uefi fb: ");
+        uart_putdec(fb.width);
+        uart_puts("x");
+        uart_putdec(fb.height);
+        uart_puts(" @ ");
+        uart_puthex(fb.base_addr);
+        uart_puts("\n");
+        return 0;
+    }
+    
+    fb.base_addr = DEFAULT_FB_BASE;
+    fb.width = DEFAULT_FB_WIDTH;
+    fb.height = DEFAULT_FB_HEIGHT;
+    fb.pitch = fb.width * 4;
+    fb.size = fb.pitch * fb.height;
+    
+    uart_puts("fallback fb: ");
+    uart_putdec(fb.width);
+    uart_puts("x");
+    uart_putdec(fb.height);
+    uart_puts("\n");
+    
+    return -1;
+}
+
 static uint8_t font_8x16[][16] = {
    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
    {0x00,0x00,0x3E,0x63,0x60,0x60,0x60,0x60,0x60,0x60,0x63,0x3E,0x00,0x00,0x00,0x00},
@@ -70,16 +187,16 @@ static int char_to_font_index(char c) {
 }
 
 static void fb_init(void) {
-   for (uint64_t offset = 0; offset < FB_WIDTH * FB_HEIGHT * 4; offset += PAGE_SIZE) {
-       vm_map(FB_BASE + offset, FB_BASE + offset, PROT_READ | PROT_WRITE);
+   for (uint64_t offset = 0; offset < fb.size; offset += PAGE_SIZE) {
+       vm_map(fb.base_addr + offset, fb.base_addr + offset, PROT_READ | PROT_WRITE);
    }
 }
 
 static void fb_putpixel(uint32_t x, uint32_t y, uint32_t color) {
-   if (x >= FB_WIDTH || y >= FB_HEIGHT) return;
+   if (x >= fb.width || y >= fb.height) return;
    
-   volatile uint32_t* fb = (volatile uint32_t*)FB_BASE;
-   fb[y * FB_WIDTH + x] = color;
+   volatile uint32_t* fbptr = (volatile uint32_t*)fb.base_addr;
+   fbptr[y * fb.width + x] = color;
 }
 
 static void fb_putchar(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
@@ -104,9 +221,9 @@ static void fb_puts(const char* str, uint32_t x, uint32_t y, uint32_t fg, uint32
 }
 
 static void fb_clear(uint32_t color) {
-   volatile uint32_t* fb = (volatile uint32_t*)FB_BASE;
-   for (uint32_t i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
-       fb[i] = color;
+   volatile uint32_t* fbptr = (volatile uint32_t*)fb.base_addr;
+   for (uint32_t i = 0; i < fb.width * fb.height; i++) {
+       fbptr[i] = color;
    }
 }
 
@@ -117,6 +234,7 @@ void kernel_main(void) {
    uart_init();
    uart_puts("Comet OS - ARM64 Kernel Starting\n");
    
+   fb_detect();
    fb_init();
    fb_clear(0x001122);
    
@@ -128,23 +246,7 @@ void kernel_main(void) {
    uart_puts("Free pages: ");
    
    uint64_t free = get_free_pages();
-   char num_str[32];
-   int i = 0;
-   if (free == 0) {
-       num_str[i++] = '0';
-   } else {
-       while (free > 0) {
-           num_str[i++] = '0' + (free % 10);
-           free /= 10;
-       }
-       for (int j = 0; j < i / 2; j++) {
-           char temp = num_str[j];
-           num_str[j] = num_str[i - 1 - j];
-           num_str[i - 1 - j] = temp;
-       }
-   }
-   num_str[i] = '\0';
-   uart_puts(num_str);
+   uart_putdec(free);
    uart_puts("\n");
    
    uart_puts("Comet OS - Boot Complete\n");

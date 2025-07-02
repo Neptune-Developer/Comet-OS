@@ -1,115 +1,98 @@
-.section .text.boot
-.global _bootloader_start
+.section .text.bootloader
+.globl _bootloader_start
 
 _bootloader_start:
-    mrs x0, mpidr_el1
-    and x0, x0, #3
-    cbnz x0, park_core
-
-    mov x0, #0x80000
-    mov sp, x0
+    mov x20, x0
+    mov x21, x1
+    mov x22, x2
+    mov x23, x3
 
     mrs x0, currentel
-    and x0, x0, #12
-    cmp x0, #12
+    lsr x0, x0, #2
+    cmp x0, #3
     b.eq el3_entry
-    cmp x0, #8
+    cmp x0, #2
     b.eq el2_entry
     b el1_entry
 
 el3_entry:
-    mov x0, #0b01001
-    msr scr_el3, x0
-
-    mov x0, #0x30d00800
-    msr sctlr_el2, x0
-
-    mov x0, #0x80000000
-    msr hcr_el2, x0
-
-    mov x0, #0x33ff
-    msr cptr_el2, x0
-
-    msr hstr_el2, xzr
-
-    mov x0, #0x00000000
-    msr cnthctl_el2, x0
-
-    msr cntvoff_el2, xzr
-
-    mov x0, #0x045
+    msr scr_el3, xzr
+    
+    ldr x0, =0x3c9
     msr spsr_el3, x0
-
     adr x0, el2_entry
     msr elr_el3, x0
-
     eret
 
 el2_entry:
+    msr cptr_el2, xzr
+    msr hstr_el2, xzr
+    
+    mov x0, #(1 << 31)
+    msr hcr_el2, x0
+    
     mrs x0, cnthctl_el2
     orr x0, x0, #3
     msr cnthctl_el2, x0
-
     msr cntvoff_el2, xzr
-
-    mov x0, #0x80000000
-    msr hcr_el2, x0
-
-    mov x0, #0x0800
-    movk x0, #0x30d0, lsl #16
-    msr sctlr_el1, x0
-
-    mov x0, #0x00000000
+    
+    mov x0, #0x3c5
     msr spsr_el2, x0
-
-    mov x0, #0x005
-    msr spsr_el2, x0
-
     adr x0, el1_entry
     msr elr_el2, x0
-
     eret
 
 el1_entry:
-    ldr x0, =kernel_base
-    br x0
-
-park_core:
-    wfi
-    b park_core
+    mrs x1, mpidr_el1
+    and x1, x1, #3
+    cbnz x1, halt_secondary
+    
+    ldr x1, =bootloader_stack_top
+    mov sp, x1
+    
+    ldr x0, =kernel_load_addr
+    ldr x1, =kernel_size
+    bl load_kernel
+    
+    mov x0, x20
+    mov x1, x21  
+    mov x2, x22
+    mov x3, x23
+    
+    ldr x4, =kernel_entry_point
+    br x4
 
 load_kernel:
-    ldr x0, =0x80000
-    ldr x1, =kernel_image
-    ldr x2, =kernel_size
-    cbz x2, kernel_loaded
-
+    ldr x2, =kernel_blob_start
+    mov x3, #0
 copy_loop:
-    ldr x3, [x1], #8
-    str x3, [x0], #8
-    subs x2, x2, #8
-    b.gt copy_loop
-
-kernel_loaded:
+    cmp x3, x1
+    b.ge copy_done
+    ldr x4, [x2, x3]
+    str x4, [x0, x3]
+    add x3, x3, #8
+    b copy_loop
+copy_done:
     ret
 
+halt_secondary:
+    wfi
+    b halt_secondary
+
 .section .data
-kernel_base:
+kernel_load_addr:
     .quad 0x80000
-
-kernel_image:
-    .incbin "kernel.bin"
-kernel_image_end:
-
+kernel_entry_point:
+    .quad 0x80000
 kernel_size:
-    .quad kernel_image_end - kernel_image
+    .quad 0x100000  // 1mb max
 
 .section .rodata
-boot_message:
-    .ascii "ARM64 Bootloader v1.0\n\0"
+kernel_blob_start:
+    .incbin "kernel.bin"
 
 .section .bss
-.align 3
-stack_bottom:
-    .space 0x4000
-stack_top:
+.align 16
+bootloader_stack_bottom:
+    .space 8192
+bootloader_stack_top:

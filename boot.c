@@ -95,3 +95,4 @@ void boot_main(void) {
         __asm__ volatile("wfi");
     }
 }
+

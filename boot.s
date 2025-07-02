@@ -1,11 +1,9 @@
 .section .text.boot
 .global _start
-
 _start:
     mrs x0, mpidr_el1
     and x0, x0, #3
     cbnz x0, halt
-
     ldr x0, =__bss_start
     ldr x1, =__bss_end
 clear_bss:
@@ -13,43 +11,33 @@ clear_bss:
     b.ge bss_cleared
     str xzr, [x0], #8
     b clear_bss
-
 bss_cleared:
     ldr x0, =0x8000
     mov sp, x0
-
     mrs x0, currentel
     and x0, x0, #12
     cmp x0, #8
     b.ne halt
-
     mrs x0, sctlr_el1
     bic x0, x0, #1
     msr sctlr_el1, x0
-
     ldr x0, =page_tables
     msr ttbr0_el1, x0
     msr ttbr1_el1, xzr
-
     mov x0, #0x44
     msr mair_el1, x0
-
     mov x0, #0x803510
     msr tcr_el1, x0
-
     isb
-
     bl setup_initial_page_tables
-
     mrs x0, sctlr_el1
     orr x0, x0, #1
     orr x0, x0, #4
     orr x0, x0, #0x1000
     msr sctlr_el1, x0
     isb
-
+    bl setup_fb_info
     bl boot_main
-
 halt:
     wfi
     b halt
@@ -62,21 +50,18 @@ clear_tables:
     b.ge tables_cleared
     str xzr, [x0], #8
     b clear_tables
-
 tables_cleared:
     ldr x0, =page_tables
     ldr x1, =page_tables
     add x1, x1, #0x1000
     orr x1, x1, #0x3
     str x1, [x0]
-
     ldr x0, =page_tables
     add x0, x0, #0x1000
     ldr x1, =page_tables
     add x1, x1, #0x2000
     orr x1, x1, #0x3
     str x1, [x0]
-
     ldr x0, =page_tables
     add x0, x0, #0x2000
     mov x1, #0
@@ -92,11 +77,18 @@ no_exec:
     add x1, x1, #0x1000
     sub x2, x2, #1
     b map_loop
-
 map_done:
     tlbi vmalle1
     dsb sy
     isb
+    ret
+
+setup_fb_info:
+    mov x0, #0x8000
+    str xzr, [x0]
+    str xzr, [x0, #8]
+    str xzr, [x0, #16]
+    str xzr, [x0, #24]
     ret
 
 .section .data

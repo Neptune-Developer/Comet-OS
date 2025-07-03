@@ -13,6 +13,7 @@ added W^X protection and PROT_USER for userland applications (maybe ill add load
 # how to build and use
 building an os from c source to bootable iso involves several key steps:
 toolchain setup:
-bash
+
 sudo apt install build-essential nasm xorriso grub-pc-bin grub-common
+
 this installs the toolchain. i will add the makefile and linker when im ready lol

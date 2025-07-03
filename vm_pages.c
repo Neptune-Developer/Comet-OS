@@ -27,6 +27,10 @@
 #define PFN_TO_PADDR(pfn) ((pfn) << PAGE_SHIFT)
 #define PADDR_TO_PFN(paddr) ((paddr) >> PAGE_SHIFT)
 
+// W^X protection flags
+#define VM_AREA_WAS_EXEC (1 << 0)
+#define VM_AREA_WAS_WRITE (1 << 1)
+
 struct page {
     uint64_t phys_addr;
     uint32_t flags;
@@ -37,6 +41,7 @@ struct vm_area {
     uint64_t start;
     uint64_t end;
     uint32_t prot;
+    uint32_t wx_flags;  // track w^x history
     struct vm_area* next;
     uint8_t in_use;
 };
@@ -52,6 +57,9 @@ static uint64_t free_pages = 0;
 static uint32_t next_free_area = 0;
 
 static uint64_t* page_table_base = (uint64_t*)0x1000;
+
+// external kernel_panic declaration
+extern void kernel_panic(const char* error);
 
 static inline void tlb_invalidate_page(uint64_t virt_addr) {
     __asm__ volatile(
@@ -156,6 +164,7 @@ void vm_init(void) {
     for (int i = 0; i < VM_AREA_POOL_SIZE; i++) {
         vm_area_pool[i].in_use = 0;
         vm_area_pool[i].next = NULL;
+        vm_area_pool[i].wx_flags = 0;
     }
     
     total_pages = VM_MAX_PAGES;
@@ -257,6 +266,16 @@ int vm_map(uint64_t virt_addr, uint64_t phys_addr, uint32_t prot) {
     area->start = virt_addr;
     area->end = virt_addr + PAGE_SIZE;
     area->prot = prot;
+    area->wx_flags = 0;
+    
+    // track initial state
+    if (prot & PROT_EXEC) {
+        area->wx_flags |= VM_AREA_WAS_EXEC;
+    }
+    if (prot & PROT_WRITE) {
+        area->wx_flags |= VM_AREA_WAS_WRITE;
+    }
+    
     area->next = vm_areas;
     vm_areas = area;
     
@@ -350,6 +369,24 @@ int vm_protect(uint64_t virt_addr, uint32_t prot) {
     if (!page_table_base) return -1;
     if (virt_addr & 0xFFF) return -1;
     
+    // find vm_area first to check w^x violation
+    struct vm_area* area = vm_areas;
+    while (area) {
+        if (area->start <= virt_addr && virt_addr < area->end) {
+            break;
+        }
+        area = area->next;
+    }
+    
+    if (!area) return -1;
+    
+    // w^x security check
+    if (prot & PROT_EXEC) {
+        if (area->wx_flags & VM_AREA_WAS_WRITE) {
+            kernel_panic("[SECURITY] CANNOT TURN READ/WRITABLE MEM INTO EXECUTABLE");
+        }
+    }
+    
     uint64_t l0_idx = (virt_addr >> 39) & 0x1FF;
     uint64_t l1_idx = (virt_addr >> 30) & 0x1FF;
     uint64_t l2_idx = (virt_addr >> 21) & 0x1FF;
@@ -392,13 +429,13 @@ int vm_protect(uint64_t virt_addr, uint32_t prot) {
     l3_table[l3_idx] = phys_addr | pte_flags;
     tlb_invalidate_page(virt_addr);
     
-    struct vm_area* current = vm_areas;
-    while (current) {
-        if (current->start <= virt_addr && virt_addr < current->end) {
-            current->prot = prot;
-            break;
-        }
-        current = current->next;
+    // update area state and track w^x history
+    area->prot = prot;
+    if (prot & PROT_WRITE) {
+        area->wx_flags |= VM_AREA_WAS_WRITE;
+    }
+    if (prot & PROT_EXEC) {
+        area->wx_flags |= VM_AREA_WAS_EXEC;
     }
     
     return 0;

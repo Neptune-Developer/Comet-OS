@@ -153,8 +153,16 @@ void kernel_main(void) {
    vm_init();
    set_page_table_base(0x1000);
    
-   uart_init();
-   
+   static void uart_init(void) {
+   vm_map(UART_BASE, UART_BASE, PROT_READ | PROT_WRITE);
+   mmio_write(UART_CR, 0);
+   mmio_write(UART_IBRD, 26);
+   mmio_write(UART_FBRD, 3);
+   mmio_write(UART_LCRH, 0x70);
+   mmio_write(UART_CR, 0x301);
+   asm volatile("dmb ish" ::: "memory");
+}
+
    fb_detect();
    fb_init();
    fb_clear(0x000000);

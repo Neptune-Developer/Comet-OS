@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#define PROT_USER  0x8
 #define PROT_NONE  0x0
 #define PROT_READ  0x1
 #define PROT_WRITE 0x2

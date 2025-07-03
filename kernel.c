@@ -118,6 +118,15 @@ static void fb_puts(const char* str, uint32_t x, uint32_t y, uint32_t fg, uint32
    }
 }
 
+void kernel_panic(const char* error) {
+   fb_clear(0x000000);
+   fb_puts("KERNEL PANIC: ", 10, 10, 0xFF0000, 0x000000);
+   fb_puts(error, 122, 10, 0xFF0000, 0x000000);
+   while(1) {
+       asm volatile("wfi");
+   }
+}
+
 void kernel_main(void) {
    vm_init();
    set_page_table_base(0x1000);

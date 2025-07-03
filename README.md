@@ -5,4 +5,4 @@ i do intend on making this OS be able to run doom and have a filesystem.
 
 
 # latest changes
-added cursor system
+added wifi connection

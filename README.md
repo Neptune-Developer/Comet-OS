@@ -5,8 +5,7 @@ i do intend on making this OS be able to run doom and have a filesystem.
 
 
 # latest changes
-added W^X protection and PROT_USER for userland applications (maybe ill add loadable applications u can install and run soon)
-
+added scheduler
 
 
 
@@ -20,4 +19,4 @@ this installs the toolchain. i will add the makefile and linker when im ready lo
 
 
 # version
-current kernel version is 1.0.0
+current kernel version is 1.0.1

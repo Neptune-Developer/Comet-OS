@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "vm_pages.h"
+#include <vm_pages.h>
 
 #define DEFAULT_FB_BASE 0xA0000000
 #define DEFAULT_FB_WIDTH 1024
@@ -18,6 +18,7 @@ struct fb_info {
 static struct fb_info fb;
 static uint32_t cursor_x = 0;
 static uint32_t cursor_y = 0;
+
 
 static void mmio_write(uint64_t addr, uint32_t value) {
    *(volatile uint32_t*)addr = value;
@@ -94,15 +95,16 @@ static void fb_clear(uint32_t color) {
 }
 
 static void fb_putchar(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+   if (x >= fb.width || y >= fb.height) return;
+   
    uint8_t* glyph = font[(uint8_t)c];
    volatile uint32_t* fbptr = (volatile uint32_t*)fb.base_addr;
    
    for (int row = 0; row < 16; row++) {
        for (int col = 0; col < 8; col++) {
+           if (x + col >= fb.width || y + row >= fb.height) continue;
            uint32_t color = (glyph[row] & (1 << (7 - col))) ? fg : bg;
-           if (x + col < fb.width && y + row < fb.height) {
-               fbptr[(y + row) * fb.width + (x + col)] = color;
-           }
+           fbptr[(y + row) * fb.width + (x + col)] = color;
        }
    }
 }
@@ -115,10 +117,26 @@ static void fb_puts(const char* str, uint32_t x, uint32_t y, uint32_t fg, uint32
            cursor_y += 16;
            cursor_x = x;
        } else {
-           fb_putchar(*str, cursor_x, cursor_y, fg, bg);
-           cursor_x += 8;
+           if (cursor_x < fb.width && cursor_y < fb.height) {
+               fb_putchar(*str, cursor_x, cursor_y, fg, bg);
+               cursor_x += 8;
+           }
        }
        str++;
+   }
+}
+
+static void fb_scroll(void) {
+   volatile uint32_t* fbptr = (volatile uint32_t*)fb.base_addr;
+   for (uint32_t y = 0; y < fb.height - 16; y++) {
+       for (uint32_t x = 0; x < fb.width; x++) {
+           fbptr[y * fb.width + x] = fbptr[(y + 16) * fb.width + x];
+       }
+   }
+   for (uint32_t y = fb.height - 16; y < fb.height; y++) {
+       for (uint32_t x = 0; x < fb.width; x++) {
+           fbptr[y * fb.width + x] = 0x000000;
+       }
    }
 }
 
@@ -129,9 +147,23 @@ static void fb_print(const char* str, uint32_t fg, uint32_t bg) {
        if (*str == '\n') {
            cur_y += 16;
            cur_x = 0;
+           if (cur_y >= fb.height) {
+               fb_scroll();
+               cur_y = fb.height - 16;
+           }
        } else {
-           fb_putchar(*str, cur_x, cur_y, fg, bg);
-           cur_x += 8;
+           if (cur_x + 8 >= fb.width) {
+               cur_y += 16;
+               cur_x = 0;
+               if (cur_y >= fb.height) {
+                   fb_scroll();
+                   cur_y = fb.height - 16;
+               }
+           }
+           if (cur_x < fb.width && cur_y < fb.height) {
+               fb_putchar(*str, cur_x, cur_y, fg, bg);
+               cur_x += 8;
+           }
        }
        str++;
    }
@@ -142,7 +174,13 @@ static void fb_print(const char* str, uint32_t fg, uint32_t bg) {
 static void fb_newline(void) {
    cursor_x = 0;
    cursor_y += 16;
+   if (cursor_y >= fb.height) {
+       fb_scroll();
+       cursor_y = fb.height - 16;
+   }
 }
+
+
 
 void kernel_panic(const char* error) {
    fb_clear(0x000000);

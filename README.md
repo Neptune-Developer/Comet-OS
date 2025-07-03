@@ -5,4 +5,4 @@ i do intend on making this OS be able to run doom and have a filesystem.
 
 
 # latest changes
-added kernel_panic function cuz why not
+added cursor system

@@ -5,6 +5,9 @@ extern void kernel_main(void);
 extern uint64_t __bss_start;
 extern uint64_t __bss_end;
 
+// Forward declaration for set_page_table_base, which is likely in vm_pages.c or a related file
+void set_page_table_base(uint64_t base_addr);
+
 static void clear_bss(void) {
     uint64_t* bss_start = &__bss_start;
     uint64_t* bss_end = &__bss_end;
@@ -34,14 +37,14 @@ void setup_mmu(void) {
         ttbr0_l3[i] = 0;
     }
     
-    ttbr0_l1[0] = (uint64_t)ttbr0_l2 | 0x3;
-    ttbr0_l2[0] = (uint64_t)ttbr0_l3 | 0x3;
+    ttbr0_l1[0] = (uint64_t)ttbr0_l2 | 0x3ULL;
+    ttbr0_l2[0] = (uint64_t)ttbr0_l3 | 0x3ULL;
     
     for (int i = 0; i < 512; i++) {
-        uint64_t addr = i * 0x1000;
-        uint64_t flags = 0x403;
+        uint64_t addr = (uint64_t)i * 0x1000ULL;
+        uint64_t flags = 0x403ULL;
         
-        if (addr < 0x200000) {
+        if (addr < 0x200000ULL) {
             flags |= 0x8000000000000000ULL;
         }
         
@@ -77,10 +80,10 @@ void setup_mmu(void) {
     
     uint64_t sctlr;
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr |= (1 << 0) |
-             (1 << 2) |
-             (1 << 12);
-    sctlr &= ~((1 << 1) | (1 << 19));
+    sctlr |= (1ULL << 0) |
+             (1ULL << 2) |
+             (1ULL << 12);
+    sctlr &= ~((1ULL << 1) | (1ULL << 19));
     __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
     __asm__ volatile("isb");
 }
@@ -88,7 +91,7 @@ void setup_mmu(void) {
 void boot_main(void) {
     clear_bss();
     setup_mmu();
-    set_page_table_base(0x1000);
+    set_page_table_base(0x1000ULL);
     kernel_main();
     
     while(1) {

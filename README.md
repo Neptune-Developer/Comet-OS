@@ -5,4 +5,4 @@ i do intend on making this OS be able to run doom and have a filesystem.
 
 
 # latest changes
-added wifi connection
+added W^X protection and PROT_USER for userland applications (maybe ill add loadable applications u can install and run soon)

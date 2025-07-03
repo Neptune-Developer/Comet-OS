@@ -16,6 +16,8 @@ struct fb_info {
 };
 
 static struct fb_info fb;
+static uint32_t cursor_x = 0;
+static uint32_t cursor_y = 0;
 
 static void mmio_write(uint64_t addr, uint32_t value) {
    *(volatile uint32_t*)addr = value;
@@ -87,6 +89,8 @@ static void fb_clear(uint32_t color) {
    for (uint32_t i = 0; i < fb.width * fb.height; i++) {
        fbptr[i] = color;
    }
+   cursor_x = 0;
+   cursor_y = 0;
 }
 
 static void fb_putchar(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
@@ -104,24 +108,46 @@ static void fb_putchar(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg)
 }
 
 static void fb_puts(const char* str, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
-   uint32_t cur_x = x;
-   uint32_t cur_y = y;
+   cursor_x = x;
+   cursor_y = y;
+   while (*str) {
+       if (*str == '\n') {
+           cursor_y += 16;
+           cursor_x = x;
+       } else {
+           fb_putchar(*str, cursor_x, cursor_y, fg, bg);
+           cursor_x += 8;
+       }
+       str++;
+   }
+}
+
+static void fb_print(const char* str, uint32_t fg, uint32_t bg) {
+   uint32_t cur_x = cursor_x;
+   uint32_t cur_y = cursor_y;
    while (*str) {
        if (*str == '\n') {
            cur_y += 16;
-           cur_x = x;
+           cur_x = 0;
        } else {
            fb_putchar(*str, cur_x, cur_y, fg, bg);
            cur_x += 8;
        }
        str++;
    }
+   cursor_x = cur_x;
+   cursor_y = cur_y;
+}
+
+static void fb_newline(void) {
+   cursor_x = 0;
+   cursor_y += 16;
 }
 
 void kernel_panic(const char* error) {
    fb_clear(0x000000);
-   fb_puts("KERNEL PANIC: ", 10, 10, 0xFF0000, 0x000000);
-   fb_puts(error, 122, 10, 0xFF0000, 0x000000);
+   fb_print("KERNEL PANIC: ", 0xFF0000, 0x000000);
+   fb_print(error, 0xFF0000, 0x000000);
    while(1) {
        asm volatile("wfi");
    }

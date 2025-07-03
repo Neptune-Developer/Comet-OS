@@ -17,3 +17,7 @@ toolchain setup:
 sudo apt install build-essential nasm xorriso grub-pc-bin grub-common
 
 this installs the toolchain. i will add the makefile and linker when im ready lol
+
+
+# version
+current kernel version is 1.0.0

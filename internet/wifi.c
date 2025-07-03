@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <wifi.h>
-#include <../../vm_pages.h>
+#include <../vm_pages.h>
 
 static uint64_t wifi_mapped_base = 0;
 static bool wifi_initialized = false;

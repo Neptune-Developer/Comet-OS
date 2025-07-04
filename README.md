@@ -5,7 +5,7 @@ i do intend on making this OS be able to run doom and have a filesystem.
 
 
 # latest changes
-added scheduler
+added kprintf 
 
 
 
@@ -19,4 +19,4 @@ this installs the toolchain. i will add the makefile and linker when im ready lo
 
 
 # version
-current kernel version is 1.0.1
+current kernel version is 1.0.2
